@@ -1,0 +1,562 @@
+let DB = JSON.parse(localStorage.getItem('enq_v2') || '[]');
+let editingId = null;
+
+function persist() { localStorage.setItem('enq_v2', JSON.stringify(DB)); }
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+function today() { return new Date().toISOString().split('T')[0]; }
+function fmtDate(d) { if (!d) return '—'; const [y,m,day]=d.split('-'); return `${day}/${m}/${y}`; }
+// Enquiry date export format: 1-Mar or 1-Mar-26 if year differs from current
+function fmtEnquiryDate(d) {
+  if (!d) return '';
+  const [y,m,day] = d.split('-');
+  const date = new Date(parseInt(y), parseInt(m)-1, parseInt(day));
+  if (isNaN(date.getTime())) return '';
+  const mon = date.toLocaleDateString('en-US', { month: 'short' });
+  const currentYear = new Date().getFullYear();
+  const yr = parseInt(y);
+  if (yr !== currentYear) {
+    return `${parseInt(day)}-${mon}-${String(yr).slice(-2)}`;
+  }
+  return `${parseInt(day)}-${mon}`;
+}
+// SharePoint "Date of function" format: Saturday, August 29, 2026
+function fmtEventDate(d) {
+  if (!d) return '';
+  const [y,m,day] = d.split('-');
+  const date = new Date(parseInt(y), parseInt(m)-1, parseInt(day));
+  if (isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+}
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+function showToast(msg) {
+  const t=document.getElementById('toast');
+  const isDelete = msg.toLowerCase().includes('delet');
+  t.innerHTML = (isDelete ? '🗑 ' : '✓ ') + msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2800);
+}
+
+// ── PASTE HANDLING ──
+function handleInput() {
+  const val = document.getElementById('paste-input').value.trim();
+  document.getElementById('parse-btn').classList.toggle('hidden', val.length < 20);
+}
+function scheduleParse() { setTimeout(doParse, 100); }
+function doParse() {
+  const raw = document.getElementById('paste-input').value;
+  if (!raw.trim()) return;
+  const parsed = parseEmail(raw);
+  document.getElementById('paste-input').value = '';
+  document.getElementById('parse-btn').classList.add('hidden');
+  openModal(parsed);
+}
+
+// ══════════════════════════════════════════════
+// PARSER — handles 3 source formats:
+//   A) Pink Book  — inline "Name: X  Email address: X …"
+//   B) Plain / forwarded email — name signed at bottom, Tel: for phone
+//   C) Le Pommier contact form — label line then value line
+// ══════════════════════════════════════════════
+function parseEmail(raw) {
+  const lines = raw.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').map(l=>l.trim());
+  const text  = lines.join('\n');
+
+  const MONTHS = {january:1,february:2,march:3,april:4,may:5,june:6,july:7,
+                  august:8,september:9,october:10,november:11,december:12,
+                  jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+  const INTERNAL = ['lepommier','digitalniche','pink-book','eventmanagementsolutions'];
+
+  function nextVal(re) {
+    for (let i=0;i<lines.length;i++) {
+      const l = lines[i];
+      // Mac format: label stands alone on its line, value on the next non-empty line
+      if (re.test(l)) {
+        const rest = l.replace(re,'').trim();
+        if (!rest) {
+          // pure label line — grab the next non-empty line as the value
+          for (let j=i+1;j<lines.length;j++) { if (lines[j]) return lines[j]; }
+        } else {
+          // Windows format: label and value on same line, e.g. "Name Natalie" or "Name: Natalie"
+          // rest already stripped the label; return it if it looks like a value (not another label)
+          return rest.replace(/^:\s*/,'');
+        }
+      }
+    }
+    return '';
+  }
+  function inlineVal(re) { const m=text.match(re); return m?m[1].trim():''; }
+  function cap(s) { return s ? s.charAt(0).toUpperCase()+s.slice(1) : ''; }
+
+  function parseDate(s) {
+    if (!s) return '';
+    let m=s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+    if (m) { let y=m[3]; if(y.length===2)y='20'+y; return `${y}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`; }
+    m=s.match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
+    if (m) { const mn=MONTHS[m[2].toLowerCase()]; if(mn) return `${m[3]}-${String(mn).padStart(2,'0')}-${m[1].padStart(2,'0')}`; }
+    return '';
+  }
+
+  function findEventDate(src) {
+    let m=src.match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+    if (m) { let y=m[3]; if(y.length===2)y='20'+y; return `${y}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`; }
+    const MW=Object.keys(MONTHS).join('|');
+    const r1=new RegExp(`(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MW})(?:[,\\s]+(\\d{4}))?`,'i');
+    const r2=new RegExp(`(${MW})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:[,\\s]+(\\d{4}))?`,'i');
+    m=src.match(r1);
+    if (m) { const mn=MONTHS[m[2].toLowerCase()]; const y=m[3]||new Date().getFullYear(); if(mn) return `${y}-${String(mn).padStart(2,'0')}-${m[1].padStart(2,'0')}`; }
+    m=src.match(r2);
+    if (m) { const mn=MONTHS[m[1].toLowerCase()]; const y=m[3]||new Date().getFullYear(); if(mn) return `${y}-${String(mn).padStart(2,'0')}-${m[2].padStart(2,'0')}`; }
+    return '';
+  }
+
+  const isPinkBook    = /pink-book\.co\.za|Listing title:|Listing URL:/i.test(text);
+  // Mac: label on its own line, value on next line. Windows: label and value collapsed on same line.
+  const isContactForm = (lines.some(l=>/^Name$/i.test(l)) && lines.some(l=>/^(Last|Last Name)$/i.test(l)))
+    || (lines.some(l=>/^Name\s+\S/i.test(l)) && lines.some(l=>/^(Last|Last Name|Surname)\s+\S/i.test(l)))
+    || (lines.some(l=>/^Name:\s+\S/i.test(l)) && lines.some(l=>/^(Last|Last Name|Surname):\s+\S/i.test(l)));
+  // A sign-off means it's a proper email regardless of length or missing headers
+  const hasSignOff = /^(Kind Regards|Best Regards|Regards,?|Yours sincerely|Warm regards|Best wishes|Groete|Baie dankie)/im.test(text);
+  // WhatsApp: short, conversational, no email structure and no formal sign-off
+  const isWhatsApp    = !isPinkBook && !isContactForm && !hasSignOff
+    && !text.includes('From:') && !text.includes('Subject:')
+    && text.length < 600;
+
+  let firstName='', lastName='', email='', phone='', enquiryDate=today(), eventDate='', message='', funcType='', pax='', heardFrom='';
+
+  // ── FORMAT A: PINK BOOK ──
+  if (isPinkBook) {
+    const fullName = inlineVal(/Name:\s*([^\n\r]+)/i);
+    const parts = fullName.trim().split(/\s+/);
+    firstName = parts[0]||''; lastName = parts.slice(1).join(' ')||'';
+    email = inlineVal(/Email\s*(?:address)?:\s*([\w.+-]+@[\w.-]+)/i);
+    phone = inlineVal(/Contact\s*(?:number)?:\s*([+0-9][0-9 \-]{6,15})/i);
+    const wd = inlineVal(/Wedding\s*Date:\s*([^\n\r,]+)/i);
+    eventDate = parseDate(wd.trim());
+    funcType = 'Wedding';
+    heardFrom = 'Pink Book';
+    // PAX from "Number of guests: 50"
+    const guestM = text.match(/(?:number of guests?|pax)[:\s]*([\d]+)/i);
+    if (guestM) pax = guestM[1];
+    const det = inlineVal(/Details:\s*([\s\S]{10,})/i);
+    message = det ? det.split(/Listing title:/i)[0].trim().slice(0,800) : '';
+    const dh=text.match(/Date:\s*\w+,?\s+(\d{1,2})\s+(\w+)\s+(\d{4})/i);
+    if (dh) { const mn=MONTHS[dh[2].toLowerCase()]; if(mn) enquiryDate=`${dh[3]}-${String(mn).padStart(2,'0')}-${dh[1].padStart(2,'0')}`; }
+
+  // ── FORMAT C: LE POMMIER CONTACT FORM ──
+  } else if (isContactForm) {
+    firstName = nextVal(/^Name$/i);
+    lastName  = nextVal(/^(Last|Last Name|Surname)$/i);
+    email     = nextVal(/^(Email|E-mail|Email Address)$/i);
+    phone     = nextVal(/^(Phone|Tel|Mobile|Contact Number|Number|Cell)$/i);
+    const dh=text.match(/Date:\s*\w+,?\s+(\d{1,2})\s+(\w+)\s+(\d{4})/i);
+    if (dh) { const mn=MONTHS[dh[2].toLowerCase()]; if(mn) enquiryDate=`${dh[3]}-${String(mn).padStart(2,'0')}-${dh[1].padStart(2,'0')}`; }
+    funcType = nextVal(/^Enquiry/i).replace(/\(.*?\)/g,'').trim();
+    heardFrom = 'Website';
+    // PAX sometimes mentioned in message
+    const cpaxM = text.match(/(\d+)\s*(?:pax|people|persons?|guests?|mense|gaste)/i);
+    if (cpaxM) pax = cpaxM[1];
+    const mi=lines.findIndex(l=>/^Message$/i.test(l));
+    if (mi!==-1) {
+      const ml=[];
+      for (let i=mi+1;i<lines.length;i++) {
+        if (/^(Kind Regards|Regards|Sent from|--)/i.test(lines[i])) break;
+        ml.push(lines[i]);
+      }
+      message=ml.join('\n').trim().slice(0,800);
+    }
+    // Windows: "Message" and body on same line, or "Message: body text..."
+    if (!message) { const m=text.match(/^Message[:\s]+(.{10,})/im); if(m) message=m[1].trim().slice(0,800); }
+    const msgPart=mi>=0?text.slice(text.indexOf(lines[mi])):text;
+    eventDate=findEventDate(msgPart);
+
+  // ── FORMAT D: WHATSAPP ──
+  } else if (isWhatsApp) {
+    heardFrom = 'WhatsApp';
+
+    // Strip WhatsApp timestamp prefix e.g. [2026/03/29, 08:49:56] Ma:
+    const cleanText = text.replace(/^\[[\d\/\-, :]+\]\s*\w+:\s*/gm, '').trim();
+    message = cleanText.slice(0, 800);
+
+    // Name detection — tries patterns in order, most specific first
+    const waSignOffRe = /^(Kind Regards|Regards,?|Best Regards|Best wishes|Yours sincerely|Warm regards|Groete|Baie dankie|Thank you|Thanks)/i;
+    const waGreetingWords = /^(Good|Hi|Hello|Dear|Goeie|Goedag|Hallo|Morning|Afternoon|Evening|Kind|Warm|Best|Yours)/i;
+    const waCleanLines = cleanText.split('\n').map(l => l.trim()).filter(Boolean);
+
+    let nameM =
+      // "Dis Rozaan hier" (Afrikaans intro)
+      cleanText.match(/Dis\s+([A-Z\u00C0-\u00FFa-z][a-z\u00C0-\u00FF'-]+(?:\s+[A-Z\u00C0-\u00FF][a-z\u00C0-\u00FF'-]+)?)\s+hier/i) ||
+      // "ek is / I'm / My name is X"
+      cleanText.match(/ek\s+is\s+([A-Z\u00C0-\u00FF][a-z\u00C0-\u00FF'-]+(?:\s+[A-Z\u00C0-\u00FF][a-z\u00C0-\u00FF'-]+)?)/i) ||
+      cleanText.match(/I(?:'m| am)\s+([A-Z\u00C0-\u00FF][a-z\u00C0-\u00FF'-]+(?:\s+[A-Z\u00C0-\u00FF][a-z\u00C0-\u00FF'-]+)?)/i) ||
+      cleanText.match(/My name is\s+([A-Z\u00C0-\u00FF][a-z\u00C0-\u00FF'-]+(?:\s+[A-Z\u00C0-\u00FF][a-z\u00C0-\u00FF'-]+)?)/i) ||
+      // "Thanks/Thank you Melanie" at end
+      cleanText.match(/Thank(?:s| you)[,.]?\s+([A-Z\u00C0-\u00FF][a-z\u00C0-\u00FF'-]+(?:\s+[A-Z\u00C0-\u00FF][a-z\u00C0-\u00FF'-]+)?)\s*$/im);
+
+    // Sign-off → name (same logic as plain email parser)
+    // e.g. "Kind regards\nMizelle"
+    if (!nameM) {
+      const soIdx = waCleanLines.findIndex(l => waSignOffRe.test(l));
+      if (soIdx >= 0) {
+        for (let i = soIdx + 1; i < Math.min(waCleanLines.length, soIdx + 4); i++) {
+          const l = waCleanLines[i];
+          if (l && /^[A-Z][a-zA-Z\u00C0-\u00FF'-]+(?:\s+[A-Z][a-zA-Z\u00C0-\u00FF'-]+)?$/.test(l) && !waGreetingWords.test(l)) {
+            const p = l.split(/\s+/); firstName = cap(p[0]); lastName = cap(p.slice(1).join(' ')); break;
+          }
+        }
+      }
+    }
+
+    // Name-first: capitalised word at very start, excluding greeting/sign-off words
+    if (!nameM && !firstName) {
+      nameM = cleanText.match(/^(?!(?:Good|Hi|Hello|Dear|Goeie|Goedag|Hallo|Morning|Afternoon|Evening|Kind|Warm|Best|Yours|Thank|Regards)\b)([A-Z][a-z\u00C0-\u00FF'-]{2,}(?:\s+[A-Z][a-z\u00C0-\u00FF'-]+)?)[,\s]/m);
+    }
+
+    // Initials at end e.g. "JR"
+    if (!nameM && !firstName) {
+      const ll = waCleanLines.slice(-1)[0]||'';
+      const im = ll.match(/^([A-Z]{2,4})$/);
+      if (im) nameM = im;
+    }
+
+    if (!firstName && nameM) { const p = nameM[1].trim().split(/\s+/); firstName = cap(p[0]); lastName = cap(p.slice(1).join(' ')); }
+
+    // Email — grab any email in the message (no domain filtering for WhatsApp)
+    const waEmailM = cleanText.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+    if (waEmailM) email = waEmailM[0].trim();
+
+    // Phone — SA number
+    const phM = text.match(/(?:\+27|0)[0-9][\d\s\-]{7,12}/);
+    if (phM) phone = phM[0].trim();
+
+    // PAX — always use the UPPER bound of a range
+    const rangeM = cleanText.match(/\+?-?\s*(\d+)\s*(?:tot|to|[-\u2013])\s*(\d+)/i);
+    if (rangeM) {
+      pax = String(Math.max(parseInt(rangeM[1]), parseInt(rangeM[2])));
+    } else {
+      const paxM =
+        cleanText.match(/pax\s+of\s+(\d+)/i) ||
+        cleanText.match(/(\d+)\s*(?:pax|people|persons?|guests?|delegates?|mense|gaste|persone|persona)/i) ||
+        cleanText.match(/(?:approximately|roughly|about|omtrent|sowat|[±])\s*(\d+)/i);
+      if (paxM) pax = paxM[1];
+    }
+
+    // Function type — Afrikaans + English
+    const funcMap = [
+      [/(troue|wedding|bruilof)/i,           'Wedding'],
+      [/(bridal\s*shower|bruidsaand)/i,       'Bridal Shower'],
+      [/(baby\s*shower)/i,                    'Baby Shower'],
+      [/(21st|een-en-twintigste|21ste)/i,     '21st Birthday'],
+      [/(30th|dertigste|30ste)/i,             '30th Birthday'],
+      [/(birthday|verjaarsdag|verjaardag)/i,  'Birthday'],
+      [/(baptism|doop|christening)/i,         'Baptism'],
+      [/(conference|konferensie)/i,           'Conference'],
+      [/(year.?end|jaar.?end|kersfees|christmas)/i, 'Year-End'],
+      [/(dinner|aandete)/i,                   'Dinner'],
+      [/(lunch|middagete)/i,                  'Lunch'],
+      [/(matric|gr[. ]*?12)/i,                'Matric Function'],
+      [/(reunion|re\u00FCnie)/i,              'Reunion'],
+    ];
+    for (const [re, label] of funcMap) {
+      if (re.test(cleanText)) { funcType = label; break; }
+    }
+
+    // Event date — use cleanText so timestamps don't create false dates
+    eventDate = findEventDate(cleanText);
+
+  // FORMAT B: PLAIN / FORWARDED EMAIL
+  } else {
+    // Expanded sign-off patterns
+    const signOffRe = /^(Kind Regards|Regards,?|Best Regards|Best wishes|Yours sincerely|Warm regards|Groete|Baie dankie)/i;
+
+    // Name: scan forward from sign-off for first capitalised name-like line
+    const signOffIdx = lines.findIndex(l => signOffRe.test(l));
+    if (signOffIdx >= 0) {
+      for (let i = signOffIdx + 1; i < Math.min(lines.length, signOffIdx + 6); i++) {
+        const l = lines[i];
+        if (l && /^[A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){0,2}$/.test(l) && !/^(Tel|www|http)/i.test(l)) {
+          const p = l.split(/\s+/); firstName = p[0]; lastName = p.slice(1).join(' '); break;
+        }
+      }
+    }
+    // Fallback: backwards from Tel: line
+    if (!firstName) {
+      const telIdx = lines.findIndex(l => /^Tel[:\s]/i.test(l));
+      if (telIdx > 0) {
+        for (let i = telIdx-1; i >= Math.max(0, telIdx-5); i--) {
+          const l = lines[i];
+          if (l && /^[A-Z][a-zA-Z'-]+(?: [A-Z][a-zA-Z'-]+)?$/.test(l)) {
+            const p = l.split(/\s+/); firstName = p[0]; lastName = p.slice(1).join(' '); break;
+          }
+        }
+      }
+    }
+    // Fallback: From: header innermost occurrence
+    if (!firstName) {
+      const froms = [...text.matchAll(/From:\s*([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)?)\s*[<\n]/g)];
+      if (froms.length) { const last = froms[froms.length-1]; const p = last[1].trim().split(/\s+/); firstName = p[0]; lastName = p.slice(1).join(' '); }
+    }
+    // Email — exclude internal domains
+    const allEmails = [...text.matchAll(/[\w.+-]+@[\w-]+\.[\w.]+/g)].map(m => m[0]);
+    email = allEmails.find(e => !INTERNAL.some(d => e.includes(d))) || '';
+    // Phone
+    const telLine = lines.find(l => /^Tel[:\s]/i.test(l));
+    if (telLine) phone = telLine.replace(/^Tel[:\s]*/i, '').trim();
+    if (!phone) { const m = text.match(/(?:\+[\d\s\-]{8,15}|0[0-9][\d\s\-]{7,12})/); if (m) phone = m[0].trim(); }
+    // Enquiry date from innermost Date: header
+    const allDates = [...text.matchAll(/Date:\s*\w+,?\s+(\d{1,2})\s+(\w+)\s+(\d{4})/gi)];
+    if (allDates.length) { const last = allDates[allDates.length-1]; const mn = MONTHS[last[2].toLowerCase()]; if (mn) enquiryDate = `${last[3]}-${String(mn).padStart(2,'0')}-${last[1].padStart(2,'0')}`; }
+    // heardFrom; pax
+    heardFrom = 'Website';
+    const epaxM = text.match(/(\d+)\s*(?:pax|people|persons?|guests?|delegates?|mense|gaste)/i);
+    if (epaxM) pax = epaxM[1];
+    // Function type: try known keywords from subject, fall back to cleaned subject text
+    const subjMatch = text.match(/Subject:\s*(?:FW:|RE:|FWD:)?\s*(.+)/i);
+    if (subjMatch) {
+      const subjText = subjMatch[1].trim();
+      const subjFuncMap = [
+        [/(troue|wedding|bruilof)/i,       'Wedding'],
+        [/(bridal\s*shower|bruidsaand)/i,  'Bridal Shower'],
+        [/(baby\s*shower)/i,               'Baby Shower'],
+        [/\b(21st)\b/i,                   '21st Birthday'],
+        [/\b(30th)\b/i,                   '30th Birthday'],
+        [/\b(40th)\b/i,                   '40th Birthday'],
+        [/\b(50th)\b/i,                   '50th Birthday'],
+        [/\b(60th)\b/i,                   '60th Birthday'],
+        [/\b(70th)\b/i,                   '70th Birthday'],
+        [/\b(80th)\b/i,                   '80th Birthday'],
+        [/\b(90th)\b/i,                   '90th Birthday'],
+        [/(birthday|verjaarsdag)/i,        'Birthday'],
+        [/(baptism|doop|christening)/i,    'Baptism'],
+        [/(conference|konferensie)/i,      'Conference'],
+        [/(year.?end|jaar.?end)/i,         'Year-End'],
+        [/(matric)/i,                      'Matric Function'],
+        [/(dinner|aandete)/i,              'Dinner'],
+        [/(lunch|middagete)/i,             'Lunch'],
+        [/(reunion)/i,                     'Reunion'],
+      ];
+      let matched = false;
+      for (const [re, label] of subjFuncMap) {
+        if (re.test(subjText)) { funcType = label; matched = true; break; }
+      }
+      // No keyword — use subject but strip trailing date/year noise
+      if (!matched) funcType = subjText.replace(/\s*\d{1,2}\s+\w+\s+\d{4}\s*$/, '').replace(/\s*\d{4}\s*$/, '').trim();
+    }
+    // Message body: greeting to sign-off
+    const lastSubjIdx = lines.map((l,i) => /^Subject:/i.test(l) ? i : -1).filter(i => i >= 0).pop() || 0;
+    const bodyLines = lines.slice(lastSubjIdx + 1).filter(l => l);
+    const msgStart = bodyLines.findIndex(l => /^(Dear|Hello|Hi |Good (day|morning|afternoon|evening))/i.test(l));
+    const bodyFrom = msgStart >= 0 ? bodyLines.slice(msgStart) : bodyLines;
+    const msgEnd = bodyFrom.findIndex(l => signOffRe.test(l) || /^(Thank you|Tel:|www\.)/i.test(l));
+    const bodySlice = msgEnd > 0 ? bodyFrom.slice(0, msgEnd) : bodyFrom;
+    message = bodySlice.join('\n').trim().slice(0, 800);
+    // Event date
+    const searchText = (subjMatch ? subjMatch[1] : '') + '\n' + text;
+    eventDate = findEventDate(searchText);
+  }
+  return { firstName:cap(firstName.trim()), lastName:cap(lastName.trim()), email, phone, enquiryDate, eventDate, message, funcType, pax, heardFrom };
+}
+
+// ── MODAL ──
+function openModal(p={}) {
+  editingId = null;
+  document.getElementById('modal-title').textContent = '✦ New Enquiry';
+  document.getElementById('save-btn').textContent = 'Save Enquiry';
+  document.getElementById('f-first').value = p.firstName||'';
+  document.getElementById('f-last').value  = p.lastName||'';
+  document.getElementById('f-email').value = p.email||'';
+  document.getElementById('f-phone').value = p.phone||'';
+  document.getElementById('f-venue').value = p.venue||'';
+  document.getElementById('f-type').value  = p.funcType||'';
+  document.getElementById('f-pax').value   = p.pax||'';
+  document.getElementById('f-heard').value = p.heardFrom||'';
+  document.getElementById('f-enquiry-date').value = p.enquiryDate||today();
+  document.getElementById('f-event-date').value   = p.eventDate||'';
+  document.getElementById('f-notes').value = p.message||'';
+  const mw=document.getElementById('msg-wrap');
+  if (p.message&&p.message.length>5) { mw.classList.remove('hidden'); document.getElementById('msg-text').textContent=p.message; }
+  else mw.classList.add('hidden');
+  document.getElementById('modal-overlay').classList.add('active');
+  setTimeout(()=>document.getElementById('f-first').focus(),250);
+}
+
+function openEdit(id) {
+  const row=DB.find(r=>r.id===id); if(!row) return;
+  editingId=id;
+  document.getElementById('modal-title').textContent = 'Edit Enquiry';
+  document.getElementById('save-btn').textContent = 'Update';
+  document.getElementById('f-first').value = row.firstName||'';
+  document.getElementById('f-last').value  = row.lastName||'';
+  document.getElementById('f-email').value = row.email||'';
+  document.getElementById('f-phone').value = row.phone||'';
+  document.getElementById('f-venue').value = row.venue||'';
+  document.getElementById('f-type').value  = row.funcType||'';
+  document.getElementById('f-pax').value   = row.pax||'';
+  document.getElementById('f-heard').value = row.heardFrom||'';
+  document.getElementById('f-enquiry-date').value = row.enquiryDate||today();
+  document.getElementById('f-event-date').value   = row.eventDate||'';
+  document.getElementById('f-notes').value = row.notes||'';
+  document.getElementById('msg-wrap').classList.add('hidden');
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+function closeModal() { document.getElementById('modal-overlay').classList.remove('active'); }
+function overlayClick(e) { if(e.target===document.getElementById('modal-overlay')) closeModal(); }
+
+function saveEntry() {
+  const first=document.getElementById('f-first').value.trim();
+  if (!first) { document.getElementById('f-first').style.borderColor='#e74c3c'; document.getElementById('f-first').focus(); return; }
+  document.getElementById('f-first').style.borderColor='';
+  const row={
+    id: editingId||uid(),
+    firstName: first,
+    lastName:  document.getElementById('f-last').value.trim(),
+    email:     document.getElementById('f-email').value.trim(),
+    phone:     document.getElementById('f-phone').value.trim(),
+    venue:     document.getElementById('f-venue').value.trim(),
+    funcType:  document.getElementById('f-type').value.trim(),
+    pax:       document.getElementById('f-pax').value.trim(),
+    heardFrom: document.getElementById('f-heard').value.trim(),
+    enquiryDate: document.getElementById('f-enquiry-date').value||today(),
+    eventDate:   document.getElementById('f-event-date').value,
+    notes:     document.getElementById('f-notes').value.trim(),
+  };
+  if (editingId) {
+    const idx=DB.findIndex(r=>r.id===editingId);
+    if(idx!==-1) DB[idx]=row;
+    showToast('Updated ✓');
+  } else {
+    DB.unshift(row);
+    showToast('Enquiry saved ✓');
+  }
+  persist(); renderTable(); animateNewRows(); closeModal();
+}
+
+function deleteRow(id) {
+  if (!confirm('Delete this enquiry?')) return;
+  DB=DB.filter(r=>r.id!==id);
+  persist(); renderTable(); showToast('Deleted');
+}
+
+// ── TABLE ──
+function renderTable() {
+  const search=(document.getElementById('search')?.value||'').toLowerCase();
+  let rows=DB;
+  if (search) rows=rows.filter(r=>((r.firstName||'')+' '+(r.lastName||'')+(r.email||'')+(r.phone||'')+(r.funcType||'')+(r.venue||'')).toLowerCase().includes(search));
+  document.getElementById('record-count').textContent=DB.length+' record'+(DB.length!==1?'s':'');
+  const dab = document.getElementById('delete-all-btn');
+  if (dab) dab.style.display = DB.length > 0 ? 'inline-flex' : 'none';
+  const cont=document.getElementById('table-body');
+  if (!rows.length) {
+    cont.innerHTML=`<div class="empty-state"><p>${DB.length===0?'No enquiries yet. Paste an email above or click "+ Add manually" to get started.':'No results match your search.'}</p></div>`;
+    return;
+  }
+  let h=`<table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Venue</th><th>Type</th><th>PAX</th><th>Heard From</th><th>Enquiry Date</th><th>Event Date</th><th>Notes</th><th></th></tr></thead><tbody>`;
+  rows.forEach(r=>{
+    const name=[r.firstName,r.lastName].filter(Boolean).join(' ');
+    const ns=r.notes?(r.notes.length>40?r.notes.slice(0,40)+'…':r.notes):'';
+    h+=`<tr>
+      <td><strong style="font-weight:500">${esc(name)}</strong></td>
+      <td class="td-muted">${r.email?`<a href="mailto:${esc(r.email)}" style="color:inherit;text-decoration:none">${esc(r.email)}</a>`:'—'}</td>
+      <td class="td-muted">${esc(r.phone)||'—'}</td>
+      <td class="td-muted">${esc(r.venue)||'—'}</td>
+      <td class="td-muted">${esc(r.funcType)||'—'}</td>
+      <td class="td-muted" style="text-align:center">${esc(r.pax)||'—'}</td>
+      <td class="td-muted">${esc(r.heardFrom)||'—'}</td>
+      <td class="td-muted">${fmtDate(r.enquiryDate)}</td>
+      <td class="td-muted">${fmtDate(r.eventDate)}</td>
+      <td class="td-muted" style="max-width:120px;font-size:0.78rem">${esc(ns)||'—'}</td>
+      <td style="white-space:nowrap;text-align:right;min-width:110px;width:110px">
+        <button class="btn" style="font-size:0.78rem;padding:4px 10px" onclick="openEdit('${r.id}')">Edit</button>
+        <button class="btn btn-danger" onclick="deleteRow('${r.id}')">✕</button>
+      </td>
+    </tr>`;
+  });
+  h+=`</tbody></table>`;
+  cont.innerHTML=h;
+}
+
+// ── EXPORT CSV (matches SharePoint column order) ──
+function exportCSV() {
+  if (!DB.length) { showToast('Nothing to export yet'); return; }
+  // Columns: Date of function | Name | Email address | Venue | Date of enquiry | Where did you hear about us | Type of function | PAX | Site inspection | Reason for not confirming | Confirmed | Rate Quoted | Notes/Paid
+  const hdr=['Date of function','Name','Email address','Venue','Date of enquiry','Where did you hear about us','Type of function','PAX','Site inspection','Reason for not confirming','Confirmed','Rate Quoted','Notes/Paid'];
+  const lines=[hdr.join(',')];
+  DB.forEach(r=>{
+    const name=[r.firstName,r.lastName].filter(Boolean).join(' ');
+    lines.push([
+      csv(fmtEventDate(r.eventDate)),
+      csv(name),
+      csv(r.email),
+      csv(r.venue),
+      csv(fmtEnquiryDate(r.enquiryDate)),
+      csv(r.heardFrom),
+      csv(r.funcType),
+      csv(r.pax),
+      csv(''), csv(''), csv(''), csv(''),
+      csv(r.notes),
+    ].join(','));
+  });
+  const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='le_pommier_enquiries_'+today()+'.csv'; a.click();
+  URL.revokeObjectURL(url); showToast('CSV downloaded ✓');
+}
+function csv(v) { return v?'"'+String(v).replace(/"/g,'""')+'"':''; }
+
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeModal(); closeHowTo(); } if((e.ctrlKey||e.metaKey)&&e.key==='Enter') saveEntry(); });
+
+// Header scroll shadow
+window.addEventListener('scroll', () => {
+  document.querySelector('header').classList.toggle('scrolled', window.scrollY > 10);
+}, { passive: true });
+
+// Animate new rows in on save
+const _origSave = saveEntry;
+function animateNewRows() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll('tbody tr:not(.row-new)').forEach((tr, i) => {
+      if (i === 0) {
+        tr.classList.add('row-new');
+        tr.style.animationDelay = '0ms';
+        setTimeout(() => tr.classList.remove('row-new'), 600);
+      }
+    });
+  });
+}
+
+// ── HOW TO ──
+const HT_TOTAL = 4;
+let htCurrent = 0;
+function openHowTo() { htCurrent=0; htRender(); document.getElementById('ht-overlay').classList.add('active'); }
+function closeHowTo() { document.getElementById('ht-overlay').classList.remove('active'); }
+function htOverlayClick(e) { if(e.target===document.getElementById('ht-overlay')) closeHowTo(); }
+function htGo(i) { htCurrent=i; htRender(); }
+function htStep(dir) { htCurrent=Math.max(0,Math.min(HT_TOTAL-1,htCurrent+dir)); htRender(); }
+function htRender() {
+  document.querySelectorAll('.ht-panel').forEach((p,i)=>p.classList.toggle('active',i===htCurrent));
+  document.querySelectorAll('.ht-tab').forEach((t,i)=>t.classList.toggle('active',i===htCurrent));
+  const prog=document.getElementById('ht-progress');
+  prog.innerHTML=Array.from({length:HT_TOTAL},(_,i)=>`<div class="ht-dot${i===htCurrent?' active':''}"></div>`).join('');
+  document.getElementById('ht-prev').style.visibility=htCurrent===0?'hidden':'visible';
+  document.getElementById('ht-next').textContent=htCurrent===HT_TOTAL-1?'Done':'Next →';
+  document.getElementById('ht-next').onclick=htCurrent===HT_TOTAL-1?closeHowTo:()=>htStep(1);
+}
+
+renderTable();
+
+// ── DELETE ALL ──
+function openDeleteAll() {
+  const count = DB.length;
+  if (!count) return;
+  document.getElementById('delete-all-count').textContent = count + ' enquiry record' + (count !== 1 ? 's' : '');
+  document.getElementById('delete-all-overlay').classList.add('active');
+}
+function closeDeleteAll() { document.getElementById('delete-all-overlay').classList.remove('active'); }
+function closeDeleteAllOverlay(e) { if (e.target === document.getElementById('delete-all-overlay')) closeDeleteAll(); }
+function confirmDeleteAll() {
+  DB = [];
+  persist();
+  renderTable();
+  closeDeleteAll();
+  showToast('All records deleted');
+}
