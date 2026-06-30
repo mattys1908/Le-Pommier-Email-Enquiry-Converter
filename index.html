@@ -103,12 +103,31 @@
     </div>
     <div class="modal-footer">
       <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-copy" onclick="copyFormForExcel()">Copy for Excel</button>
       <button class="btn btn-primary" id="save-btn" onclick="saveEntry()">Save Enquiry</button>
     </div>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- CLIPBOARD FALLBACK (when auto-copy is blocked) -->
+<div class="modal-overlay" id="clipboard-fallback-overlay" onclick="clipboardFallbackOverlayClick(event)" style="z-index:700">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header">
+      <h2>Copy for Excel</h2>
+      <button class="modal-close" onclick="closeClipboardFallback()">✕</button>
+    </div>
+    <div class="modal-body" style="gap:0.75rem">
+      <p style="font-size:0.9rem;line-height:1.6;color:var(--ink)">Automatic copy was blocked by your browser. Select all the text below, then copy and paste into Excel.</p>
+      <textarea id="clipboard-fallback-text" readonly onclick="selectClipboardFallback()" style="width:100%;min-height:72px;font-family:monospace;font-size:0.78rem;padding:10px;border:1px solid var(--border);border-radius:8px;resize:vertical"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeClipboardFallback()">Close</button>
+      <button class="btn btn-primary" onclick="selectClipboardFallback()">Select all</button>
+    </div>
+  </div>
+</div>
 
 <!-- DELETE ALL CONFIRMATION MODAL -->
 <div class="modal-overlay" id="delete-all-overlay" onclick="closeDeleteAllOverlay(event)" style="z-index:600">
@@ -223,20 +242,27 @@
         <div class="ht-step">
           <div class="ht-step-num">1</div>
           <div class="ht-step-content">
-            <strong>Click "↓ Export CSV"</strong>
-            <p>This button is in the top right of the page. It will immediately download a file called <span class="ht-code">le_pommier_enquiries_[date].csv</span> to your Downloads folder.</p>
+            <strong>Save copies the row automatically</strong>
+            <p>When you click <strong>Save Enquiry</strong>, the app copies one Excel-ready row to your clipboard. Switch to SharePoint Excel and paste at the next empty row — no CSV needed for single enquiries.</p>
           </div>
         </div>
         <div class="ht-step">
           <div class="ht-step-num">2</div>
           <div class="ht-step-content">
-            <strong>The columns match SharePoint exactly</strong>
-            <p>The CSV is pre-formatted in the same column order as the SharePoint spreadsheet: Date of function, Name, Email address, Venue, Date of enquiry, Type of function, and Notes. The remaining columns (Site inspection, Confirmed, Rate Quoted) are left blank for you to fill in on SharePoint.</p>
+            <strong>Use Copy buttons when needed</strong>
+            <p>Each row in the table has a <strong>Copy</strong> button. The enquiry form also has <strong>Copy for Excel</strong> if you want to copy before saving.</p>
+          </div>
+        </div>
+        <div class="ht-step">
+          <div class="ht-step-num">3</div>
+          <div class="ht-step-content">
+            <strong>Export CSV for bulk backup</strong>
+            <p>Click <strong>↓ Export CSV</strong> in the top right to download all enquiries as a backup file. Use this weekly or after logging several enquiries — not for day-to-day pasting.</p>
           </div>
         </div>
         <div class="ht-tip">
-          <strong>Export regularly as a backup</strong>
-          Since data is stored in your browser, it's a good habit to export a CSV regularly — weekly or after logging several enquiries — so you always have a safe copy.
+          <strong>Do not copy from the review form</strong>
+          Selecting text in the form and pressing Cmd+C / Ctrl+C will paste as two columns in Excel. Always use <strong>Save Enquiry</strong>, <strong>Copy for Excel</strong>, or the row <strong>Copy</strong> button instead.
         </div>
       </div>
 
@@ -245,41 +271,34 @@
         <div class="ht-step">
           <div class="ht-step-num">1</div>
           <div class="ht-step-content">
-            <strong>Open the SharePoint spreadsheet</strong>
-            <p>Go to your SharePoint link and open the Excel file. It will open in Excel Online in your browser.</p>
+            <strong>Save the enquiry</strong>
+            <p>After reviewing the parsed email, click <strong>Save Enquiry</strong>. The row is copied to your clipboard automatically in the correct SharePoint column order.</p>
           </div>
         </div>
         <div class="ht-step">
           <div class="ht-step-num">2</div>
           <div class="ht-step-content">
-            <strong>Open your downloaded CSV in Excel</strong>
-            <p>Find the CSV file in your Downloads folder and double-click to open it in Excel. You will see all your new enquiries as rows.</p>
+            <strong>Open the SharePoint spreadsheet</strong>
+            <p>Go to your SharePoint link and open the Excel file in Excel Online or the desktop app.</p>
           </div>
         </div>
         <div class="ht-step">
           <div class="ht-step-num">3</div>
           <div class="ht-step-content">
-            <strong>Copy only the new data rows</strong>
-            <p>In the CSV, click the row number of your first enquiry and drag down to the last one to select all data rows. Do <em>not</em> select the header row. Press <span class="ht-code">Cmd + C</span> <span class="ht-os-sep">/</span> <span class="ht-code">Ctrl + C</span> to copy.</p>
+            <strong>Paste at the bottom</strong>
+            <p>Scroll to the last row with data. Click the first empty cell in column A below all existing entries. Press <span class="ht-code">Cmd + V</span> <span class="ht-os-sep">/</span> <span class="ht-code">Ctrl + V</span>. One row should appear across all columns.</p>
           </div>
         </div>
         <div class="ht-step">
           <div class="ht-step-num">4</div>
           <div class="ht-step-content">
-            <strong>Paste at the bottom of the SharePoint sheet</strong>
-            <p>Switch to the SharePoint spreadsheet. Click on the first empty cell in column A below all existing data. Press <span class="ht-code">Cmd + V</span> <span class="ht-os-sep">/</span> <span class="ht-code">Ctrl + V</span> to paste. Your new rows will appear without affecting anything above.</p>
-          </div>
-        </div>
-        <div class="ht-step">
-          <div class="ht-step-num">5</div>
-          <div class="ht-step-content">
             <strong>Save the SharePoint file</strong>
-            <p>Excel Online saves automatically. If you opened it in the desktop app, press <span class="ht-code">Cmd + S</span> <span class="ht-os-sep">/</span> <span class="ht-code">Ctrl + S</span> to save and sync back to SharePoint.</p>
+            <p>Excel Online saves automatically. In the desktop app, press <span class="ht-code">Cmd + S</span> <span class="ht-os-sep">/</span> <span class="ht-code">Ctrl + S</span> to sync back to SharePoint.</p>
           </div>
         </div>
         <div class="ht-tip">
-          <strong>Never paste over existing rows</strong>
-          Always scroll to the very bottom of the existing data before pasting. Pasting from the top will overwrite entries that are already there.
+          <strong>Bulk upload alternative</strong>
+          For many enquiries at once: export CSV, open it in Excel, select all data rows (not the header), copy, and paste at the bottom of the SharePoint sheet.
         </div>
       </div>
 

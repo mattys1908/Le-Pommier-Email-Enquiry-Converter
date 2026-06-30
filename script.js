@@ -402,13 +402,9 @@ function openEdit(id) {
 function closeModal() { document.getElementById('modal-overlay').classList.remove('active'); }
 function overlayClick(e) { if(e.target===document.getElementById('modal-overlay')) closeModal(); }
 
-function saveEntry() {
-  const first=document.getElementById('f-first').value.trim();
-  if (!first) { document.getElementById('f-first').style.borderColor='#e74c3c'; document.getElementById('f-first').focus(); return; }
-  document.getElementById('f-first').style.borderColor='';
-  const row={
-    id: editingId||uid(),
-    firstName: first,
+function getRowFromForm() {
+  return {
+    firstName: document.getElementById('f-first').value.trim(),
     lastName:  document.getElementById('f-last').value.trim(),
     email:     document.getElementById('f-email').value.trim(),
     phone:     document.getElementById('f-phone').value.trim(),
@@ -416,19 +412,43 @@ function saveEntry() {
     funcType:  document.getElementById('f-type').value.trim(),
     pax:       document.getElementById('f-pax').value.trim(),
     heardFrom: document.getElementById('f-heard').value.trim(),
-    enquiryDate: document.getElementById('f-enquiry-date').value||today(),
+    enquiryDate: document.getElementById('f-enquiry-date').value || today(),
     eventDate:   document.getElementById('f-event-date').value,
     notes:     document.getElementById('f-notes').value.trim(),
   };
+}
+
+async function saveEntry() {
+  const first = document.getElementById('f-first').value.trim();
+  if (!first) { document.getElementById('f-first').style.borderColor='#e74c3c'; document.getElementById('f-first').focus(); return; }
+  document.getElementById('f-first').style.borderColor='';
+  const row = { id: editingId || uid(), ...getRowFromForm(), firstName: first };
   if (editingId) {
-    const idx=DB.findIndex(r=>r.id===editingId);
-    if(idx!==-1) DB[idx]=row;
-    showToast('Updated ✓');
+    const idx = DB.findIndex(r => r.id === editingId);
+    if (idx !== -1) DB[idx] = row;
   } else {
     DB.unshift(row);
-    showToast('Enquiry saved ✓');
   }
   persist(); renderTable(); animateNewRows(); closeModal();
+  const copied = await copyRowToClipboard(row);
+  showToast(copied
+    ? (editingId ? 'Updated & copied — paste into Excel at the next empty row' : 'Saved & copied — paste into Excel at the next empty row')
+    : (editingId ? 'Updated — tap Copy on the row to copy for Excel' : 'Saved — tap Copy on the row to copy for Excel'));
+}
+
+async function copyFormForExcel() {
+  const first = document.getElementById('f-first').value.trim();
+  if (!first) { document.getElementById('f-first').style.borderColor='#e74c3c'; document.getElementById('f-first').focus(); return; }
+  document.getElementById('f-first').style.borderColor='';
+  const copied = await copyRowToClipboard(getRowFromForm());
+  showToast(copied ? 'Copied for Excel — paste at the next empty row' : 'Select the text below and copy manually');
+}
+
+async function copyRowForExcel(id) {
+  const row = DB.find(r => r.id === id);
+  if (!row) return;
+  const copied = await copyRowToClipboard(row);
+  showToast(copied ? 'Copied for Excel — paste at the next empty row' : 'Select the text below and copy manually');
 }
 
 function deleteRow(id) {
@@ -465,8 +485,9 @@ function renderTable() {
       <td class="td-muted">${fmtDate(r.enquiryDate)}</td>
       <td class="td-muted">${fmtDate(r.eventDate)}</td>
       <td class="td-muted" style="max-width:120px;font-size:0.78rem">${esc(ns)||'—'}</td>
-      <td style="white-space:nowrap;text-align:right;min-width:110px;width:110px">
-        <button class="btn" style="font-size:0.78rem;padding:4px 10px" onclick="openEdit('${r.id}')">Edit</button>
+      <td style="white-space:nowrap;text-align:right;min-width:160px;width:160px">
+        <button class="btn btn-copy" style="font-size:0.78rem;padding:4px 8px" onclick="copyRowForExcel('${r.id}')">Copy</button>
+        <button class="btn" style="font-size:0.78rem;padding:4px 8px" onclick="openEdit('${r.id}')">Edit</button>
         <button class="btn btn-danger" onclick="deleteRow('${r.id}')">✕</button>
       </td>
     </tr>`;
@@ -475,35 +496,118 @@ function renderTable() {
   cont.innerHTML=h;
 }
 
+// ── SHAREPOINT ROW FORMAT (single source for clipboard + CSV) ──
+const SHAREPOINT_COLUMNS = [
+  { label: 'Date of function', get: r => fmtEventDate(r.eventDate) },
+  { label: 'Name', get: r => [r.firstName, r.lastName].filter(Boolean).join(' ') },
+  { label: 'Email address', get: r => r.email },
+  { label: 'Venue', get: r => r.venue },
+  { label: 'Date of enquiry', get: r => fmtEnquiryDate(r.enquiryDate) },
+  { label: 'Where did you hear about us', get: r => r.heardFrom },
+  { label: 'Type of function', get: r => r.funcType },
+  { label: 'PAX', get: r => r.pax },
+  { label: 'Site inspection', get: () => '' },
+  { label: 'Reason for not confirming', get: () => '' },
+  { label: 'Confirmed', get: () => '' },
+  { label: 'Rate Quoted', get: () => '' },
+  { label: 'Notes/Paid', get: r => r.notes },
+];
+
+function sanitizeCell(v) {
+  return String(v ?? '')
+    .replace(/[\r\n\u2028\u2029]+/g, ' ')
+    .replace(/\t/g, ' ')
+    .trim();
+}
+
+function rowToSharePointCells(row) {
+  return SHAREPOINT_COLUMNS.map(col => sanitizeCell(col.get(row)));
+}
+
+function rowToTSV(row) {
+  return rowToSharePointCells(row).join('\t');
+}
+
+function rowToHTMLTableRow(row) {
+  const cells = rowToSharePointCells(row).map(c => `<td>${esc(c)}</td>`).join('');
+  return `<table><tr>${cells}</tr></table>`;
+}
+
+async function copyRowToClipboard(row) {
+  const text = rowToTSV(row);
+  const html = rowToHTMLTableRow(row);
+  if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+          'text/html': new Blob([html], { type: 'text/html' }),
+        }),
+      ]);
+      return true;
+    } catch (_) { /* fall through */ }
+  }
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_) { /* fall through */ }
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (ok) return true;
+  } catch (_) { /* fall through */ }
+  openClipboardFallback(text);
+  return false;
+}
+
+function openClipboardFallback(text) {
+  const overlay = document.getElementById('clipboard-fallback-overlay');
+  const field = document.getElementById('clipboard-fallback-text');
+  if (!overlay || !field) return;
+  field.value = text;
+  overlay.classList.add('active');
+  requestAnimationFrame(() => { field.focus(); field.select(); });
+}
+
+function closeClipboardFallback() {
+  document.getElementById('clipboard-fallback-overlay')?.classList.remove('active');
+}
+
+function clipboardFallbackOverlayClick(e) {
+  if (e.target === document.getElementById('clipboard-fallback-overlay')) closeClipboardFallback();
+}
+
+function selectClipboardFallback() {
+  const field = document.getElementById('clipboard-fallback-text');
+  field?.focus();
+  field?.select();
+}
+
 // ── EXPORT CSV (matches SharePoint column order) ──
 function exportCSV() {
   if (!DB.length) { showToast('Nothing to export yet'); return; }
-  // Columns: Date of function | Name | Email address | Venue | Date of enquiry | Where did you hear about us | Type of function | PAX | Site inspection | Reason for not confirming | Confirmed | Rate Quoted | Notes/Paid
-  const hdr=['Date of function','Name','Email address','Venue','Date of enquiry','Where did you hear about us','Type of function','PAX','Site inspection','Reason for not confirming','Confirmed','Rate Quoted','Notes/Paid'];
-  const lines=[hdr.join(',')];
-  DB.forEach(r=>{
-    const name=[r.firstName,r.lastName].filter(Boolean).join(' ');
-    lines.push([
-      csv(fmtEventDate(r.eventDate)),
-      csv(name),
-      csv(r.email),
-      csv(r.venue),
-      csv(fmtEnquiryDate(r.enquiryDate)),
-      csv(r.heardFrom),
-      csv(r.funcType),
-      csv(r.pax),
-      csv(''), csv(''), csv(''), csv(''),
-      csv(r.notes),
-    ].join(','));
+  const hdr = SHAREPOINT_COLUMNS.map(c => c.label);
+  const lines = [hdr.join(',')];
+  DB.forEach(r => {
+    lines.push(rowToSharePointCells(r).map(csv).join(','));
   });
-  const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8;'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a'); a.href=url; a.download='le_pommier_enquiries_'+today()+'.csv'; a.click();
+  const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'le_pommier_enquiries_' + today() + '.csv'; a.click();
   URL.revokeObjectURL(url); showToast('CSV downloaded ✓');
 }
-function csv(v) { return v?'"'+String(v).replace(/"/g,'""')+'"':''; }
+function csv(v) { return v ? '"' + String(v).replace(/"/g, '""') + '"' : ''; }
 
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeModal(); closeHowTo(); } if((e.ctrlKey||e.metaKey)&&e.key==='Enter') saveEntry(); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeModal(); closeHowTo(); closeClipboardFallback(); } if((e.ctrlKey||e.metaKey)&&e.key==='Enter') saveEntry(); });
 
 // Header scroll shadow
 window.addEventListener('scroll', () => {
