@@ -109,6 +109,83 @@ function parseEmail(raw) {
     return '';
   }
 
+  // Detect function type from free text (message body / subject)
+  function detectFuncType(src) {
+    if (!src) return '';
+    // Months — so "21st of July" is not treated as a 21st birthday
+    const mon = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?';
+    // Require ordinal suffix so "60 people" is not a 60th birthday
+    const notDateOrd = (n) => new RegExp(
+      String.raw`\b${n}(?:st|nd|rd|th|ste)\b(?!\s+(?:of\s+)?(?:${mon}))`,
+      'i'
+    );
+    const funcMap = [
+      // Weddings & related
+      [/(troue|wedding|bruilof|huwelik)/i,                         'Wedding'],
+      [/(engagement|verlowing)/i,                                  'Engagement'],
+      [/(bridal\s*shower|bruidsaand|bachelorette|hen\s*party)/i,   'Bridal Shower'],
+      [/(bachelor|stag\s*(?:do|party)|jonkmans\s*partytjie)/i,     'Bachelor Party'],
+      [/(baby\s*shower)/i,                                         'Baby Shower'],
+      // Birthdays — "21st party/birthday" ahead of the date; don't let "Party on the 21st of July" match
+      [/(?:21st|21ste|een-en-twintigste)\s*(?:birthday|b[\s-]?day|party|verjaarsdag|verjaardag)|(?:birthday|verjaarsdag|verjaardag).{0,30}(?:21st|21ste)|een-en-twintigste/i, '21st Birthday'],
+      [notDateOrd(21),                                             '21st Birthday'],
+      [/(?:30th|30ste|dertigste)\s*(?:birthday|b[\s-]?day|party|verjaarsdag)|(?:birthday|verjaarsdag).{0,30}(?:30th|30ste)|dertigste/i, '30th Birthday'],
+      [notDateOrd(30),                                             '30th Birthday'],
+      [/(?:40th|40ste|veertigste)\s*(?:birthday|b[\s-]?day|party|verjaarsdag)|(?:birthday|verjaarsdag).{0,30}(?:40th|40ste)/i, '40th Birthday'],
+      [notDateOrd(40),                                             '40th Birthday'],
+      [/(?:50th|50ste|vyftigste)\s*(?:birthday|b[\s-]?day|party|verjaarsdag)|(?:birthday|verjaarsdag).{0,30}(?:50th|50ste)/i, '50th Birthday'],
+      [notDateOrd(50),                                             '50th Birthday'],
+      [/(?:60th|60ste|sestigste)\s*(?:birthday|b[\s-]?day|party|verjaarsdag)|(?:birthday|verjaarsdag).{0,30}(?:60th|60ste)/i, '60th Birthday'],
+      [notDateOrd(60),                                             '60th Birthday'],
+      [/(?:70th|70ste)\s*(?:birthday|b[\s-]?day|party|verjaarsdag)|(?:birthday|verjaarsdag).{0,30}(?:70th|70ste)/i, '70th Birthday'],
+      [notDateOrd(70),                                             '70th Birthday'],
+      [/(?:80th|80ste)\s*(?:birthday|b[\s-]?day|party|verjaarsdag)|(?:birthday|verjaarsdag).{0,30}(?:80th|80ste)/i, '80th Birthday'],
+      [notDateOrd(80),                                             '80th Birthday'],
+      [/(?:90th|90ste)\s*(?:birthday|b[\s-]?day|party|verjaarsdag)|(?:birthday|verjaarsdag).{0,30}(?:90th|90ste)/i, '90th Birthday'],
+      [notDateOrd(90),                                             '90th Birthday'],
+      [/(birthday|verjaarsdag|verjaardag|b[\s-]?day)\b/i,          'Birthday'],
+      [/(anniversary|herdenking|trou.?herdenking)/i,               'Anniversary'],
+      // Faith / family
+      [/(baptism|doop|christening|doopfees)/i,                     'Baptism'],
+      [/(confirmation|belydenis)/i,                                'Confirmation'],
+      [/(funeral|begrafnis|memorial\s*service|herdenkingsdiens)/i, 'Memorial'],
+      // Corporate / formal
+      [/(conference|konferensie)/i,                                'Conference'],
+      [/(seminar|workshop|werkwinkel)/i,                           'Workshop'],
+      [/(meeting|vergadering|board\s*meeting)/i,                   'Meeting'],
+      [/(team[\s-]*building|spanbou)/i,                            'Team Building'],
+      [/(corporate|korporatiewe\s*funksie|company\s*function)/i,   'Corporate'],
+      [/(product\s*launch|bekendstelling|launch\s*event)/i,        'Product Launch'],
+      [/(awards?\s*(?:evening|night|ceremony|dinner)|prysuitdeling)/i, 'Awards'],
+      [/(fundrais(?:er|ing)|fondsinsameling)/i,                    'Fundraiser'],
+      [/(gala)/i,                                                  'Gala'],
+      // Year-end / seasonal
+      [/(year[\s.-]*end|jaar[\s.-]*end|kersfees|christmas|nye|new\s*year)/i, 'Year-End'],
+      // School / academic
+      [/(matric|gr[. ]*?12|matriek)/i,                             'Matric Function'],
+      [/(graduation|gradeer|graduandi)/i,                          'Graduation'],
+      [/(reunion|re\u00FCnie|klasre[uü]nie)/i,                     'Reunion'],
+      // Meals / social
+      [/(braai|bbq|barbecue)/i,                                    'Braai'],
+      [/(cocktail)/i,                                              'Cocktail Party'],
+      [/(dinner|aandete|galadinee)/i,                              'Dinner'],
+      [/(lunch|middagete|luncheon)/i,                              'Lunch'],
+      [/(breakfast|ontbyt)/i,                                      'Breakfast'],
+      [/(high\s*tea)/i,                                            'High Tea'],
+      // Catch-alls (least specific — keep last)
+      [/(party|partytjie|fees|feestjie|celebration|viering)/i,     'Party'],
+    ];
+    for (const [re, label] of funcMap) {
+      if (re.test(src)) return label;
+    }
+    return '';
+  }
+
+  // Website "Enquiry" dropdown values that are not a real function type
+  function isGenericEnquiry(s) {
+    return !s || /^(event|general|other|contact)\s*enquir/i.test(s);
+  }
+
   const isPinkBook    = /pink-book\.co\.za|Listing title:|Listing URL:/i.test(text);
   // Mac: label on its own line, value on next line. Windows: label and value collapsed on same line.
   const isContactForm = (lines.some(l=>/^Name$/i.test(l)) && lines.some(l=>/^(Last|Last Name)$/i.test(l)))
@@ -150,7 +227,18 @@ function parseEmail(raw) {
     phone     = nextVal(/^(Phone|Tel|Mobile|Contact Number|Number|Cell)$/i);
     const dh=text.match(/Date:\s*\w+,?\s+(\d{1,2})\s+(\w+)\s+(\d{4})/i);
     if (dh) { const mn=MONTHS[dh[2].toLowerCase()]; if(mn) enquiryDate=`${dh[3]}-${String(mn).padStart(2,'0')}-${dh[1].padStart(2,'0')}`; }
-    funcType = nextVal(/^Enquiry/i).replace(/\(.*?\)/g,'').trim();
+    // Enquiry label often includes "(Wedding enquiries…)" — don't treat that note as the value
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^Enquiry(?:\s*\([^)]*\))?\s*:?\s*(.*)$/i);
+      if (!m) continue;
+      const rest = m[1].trim();
+      if (rest) { funcType = rest; break; }
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j]) { funcType = lines[j]; break; }
+      }
+      break;
+    }
+    funcType = funcType.replace(/\(.*?\)/g, '').trim();
     heardFrom = 'Website';
     // PAX sometimes mentioned in message
     const cpaxM = text.match(/(\d+)\s*(?:pax|people|persons?|guests?|mense|gaste)/i);
@@ -168,6 +256,17 @@ function parseEmail(raw) {
     if (!message) { const m=text.match(/^Message[:\s]+(.{10,})/im); if(m) message=m[1].trim().slice(0,800); }
     const msgPart=mi>=0?text.slice(text.indexOf(lines[mi])):text;
     eventDate=findEventDate(msgPart);
+    // Prefer type found in the message over the website Enquiry dropdown
+    // (dropdown is often just "Event enquiry"; labels also say "Wedding enquiries…")
+    const fromMsg = detectFuncType(message);
+    if (fromMsg) {
+      funcType = fromMsg;
+    } else if (isGenericEnquiry(funcType)) {
+      funcType = '';
+    } else {
+      // Keep a real dropdown value like "Wedding" when the message has no keyword
+      funcType = detectFuncType(funcType) || funcType;
+    }
 
   // ── FORMAT D: WHATSAPP ──
   } else if (isWhatsApp) {
@@ -241,24 +340,7 @@ function parseEmail(raw) {
     }
 
     // Function type — Afrikaans + English
-    const funcMap = [
-      [/(troue|wedding|bruilof)/i,           'Wedding'],
-      [/(bridal\s*shower|bruidsaand)/i,       'Bridal Shower'],
-      [/(baby\s*shower)/i,                    'Baby Shower'],
-      [/(21st|een-en-twintigste|21ste)/i,     '21st Birthday'],
-      [/(30th|dertigste|30ste)/i,             '30th Birthday'],
-      [/(birthday|verjaarsdag|verjaardag)/i,  'Birthday'],
-      [/(baptism|doop|christening)/i,         'Baptism'],
-      [/(conference|konferensie)/i,           'Conference'],
-      [/(year.?end|jaar.?end|kersfees|christmas)/i, 'Year-End'],
-      [/(dinner|aandete)/i,                   'Dinner'],
-      [/(lunch|middagete)/i,                  'Lunch'],
-      [/(matric|gr[. ]*?12)/i,                'Matric Function'],
-      [/(reunion|re\u00FCnie)/i,              'Reunion'],
-    ];
-    for (const [re, label] of funcMap) {
-      if (re.test(cleanText)) { funcType = label; break; }
-    }
+    funcType = detectFuncType(cleanText);
 
     // Event date — use cleanText so timestamps don't create false dates
     eventDate = findEventDate(cleanText);
@@ -309,37 +391,13 @@ function parseEmail(raw) {
     heardFrom = 'Website';
     const epaxM = text.match(/(\d+)\s*(?:pax|people|persons?|guests?|delegates?|mense|gaste)/i);
     if (epaxM) pax = epaxM[1];
-    // Function type: try known keywords from subject, fall back to cleaned subject text
+    // Function type: try known keywords from subject, then message body
     const subjMatch = text.match(/Subject:\s*(?:FW:|RE:|FWD:)?\s*(.+)/i);
     if (subjMatch) {
       const subjText = subjMatch[1].trim();
-      const subjFuncMap = [
-        [/(troue|wedding|bruilof)/i,       'Wedding'],
-        [/(bridal\s*shower|bruidsaand)/i,  'Bridal Shower'],
-        [/(baby\s*shower)/i,               'Baby Shower'],
-        [/\b(21st)\b/i,                   '21st Birthday'],
-        [/\b(30th)\b/i,                   '30th Birthday'],
-        [/\b(40th)\b/i,                   '40th Birthday'],
-        [/\b(50th)\b/i,                   '50th Birthday'],
-        [/\b(60th)\b/i,                   '60th Birthday'],
-        [/\b(70th)\b/i,                   '70th Birthday'],
-        [/\b(80th)\b/i,                   '80th Birthday'],
-        [/\b(90th)\b/i,                   '90th Birthday'],
-        [/(birthday|verjaarsdag)/i,        'Birthday'],
-        [/(baptism|doop|christening)/i,    'Baptism'],
-        [/(conference|konferensie)/i,      'Conference'],
-        [/(year.?end|jaar.?end)/i,         'Year-End'],
-        [/(matric)/i,                      'Matric Function'],
-        [/(dinner|aandete)/i,              'Dinner'],
-        [/(lunch|middagete)/i,             'Lunch'],
-        [/(reunion)/i,                     'Reunion'],
-      ];
-      let matched = false;
-      for (const [re, label] of subjFuncMap) {
-        if (re.test(subjText)) { funcType = label; matched = true; break; }
-      }
+      funcType = detectFuncType(subjText);
       // No keyword — use subject but strip trailing date/year noise
-      if (!matched) funcType = subjText.replace(/\s*\d{1,2}\s+\w+\s+\d{4}\s*$/, '').replace(/\s*\d{4}\s*$/, '').trim();
+      if (!funcType) funcType = subjText.replace(/\s*\d{1,2}\s+\w+\s+\d{4}\s*$/, '').replace(/\s*\d{4}\s*$/, '').trim();
     }
     // Message body: greeting to sign-off
     const lastSubjIdx = lines.map((l,i) => /^Subject:/i.test(l) ? i : -1).filter(i => i >= 0).pop() || 0;
@@ -349,6 +407,11 @@ function parseEmail(raw) {
     const msgEnd = bodyFrom.findIndex(l => signOffRe.test(l) || /^(Thank you|Tel:|www\.)/i.test(l));
     const bodySlice = msgEnd > 0 ? bodyFrom.slice(0, msgEnd) : bodyFrom;
     message = bodySlice.join('\n').trim().slice(0, 800);
+    // If subject had no real function type (or was generic), scan the body
+    if (!funcType || isGenericEnquiry(funcType) || /^Contact Us Form/i.test(funcType)) {
+      const fromMsg = detectFuncType(message);
+      if (fromMsg) funcType = fromMsg;
+    }
     // Event date
     const searchText = (subjMatch ? subjMatch[1] : '') + '\n' + text;
     eventDate = findEventDate(searchText);
