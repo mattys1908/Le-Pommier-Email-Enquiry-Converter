@@ -64,7 +64,21 @@ function parseEmail(raw) {
   const MONTHS = {january:1,february:2,march:3,april:4,may:5,june:6,july:7,
                   august:8,september:9,october:10,november:11,december:12,
                   jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+  // Internal / staff addresses — never use these as the enquirer's contact email
   const INTERNAL = ['lepommier','digitalniche','pink-book','eventmanagementsolutions'];
+  // Explicit forwarder inboxes (owner → staff). Checked even if domain list changes.
+  const FORWARDER_EMAILS = ['marketing@lepommier.co.za'];
+
+  function isStaffEmail(e) {
+    if (!e) return true;
+    const lower = e.trim().toLowerCase();
+    if (FORWARDER_EMAILS.includes(lower)) return true;
+    return INTERNAL.some(d => lower.includes(d));
+  }
+  function pickCustomerEmail(src) {
+    const all = [...String(src).matchAll(/[\w.+-]+@[\w-]+\.[\w.]+/g)].map(m => m[0]);
+    return all.find(e => !isStaffEmail(e)) || '';
+  }
 
   function nextVal(re) {
     for (let i=0;i<lines.length;i++) {
@@ -97,14 +111,45 @@ function parseEmail(raw) {
   }
 
   function findEventDate(src) {
-    let m=src.match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+    // Strip email Date: headers and "On … wrote:" attribution lines — those are not the event
+    const cleaned = String(src)
+      .replace(/^Date:\s*.+$/gim, '')
+      .replace(/^On\s.+wrote:\s*$/gim, '')
+      .replace(/\bOn\s+\w{1,9},?\s+\d{1,2}\s+\w{3,9}\s+\d{4}\s+at\s+\d{1,2}:\d{2}\b[^,\n]*/gi, '');
+    const MW = Object.keys(MONTHS).join('|');
+    const lastDay = (y, m) => new Date(y, m, 0).getDate();
+
+    // "end of September 2026" / "mid September" / "early October 2026"
+    let m = cleaned.match(new RegExp(
+      `(?:the\\s+)?(end|late|mid(?:dle)?|early|beginning)\\s+(?:of\\s+)?(${MW})(?:[,\\s]+(\\d{4}))?`,
+      'i'
+    ));
+    if (m) {
+      const mn = MONTHS[m[2].toLowerCase()];
+      const y = parseInt(m[3] || new Date().getFullYear(), 10);
+      if (mn) {
+        const fuzzy = m[1].toLowerCase();
+        let day = 1;
+        if (/end|late/.test(fuzzy)) day = lastDay(y, mn);
+        else if (/mid/.test(fuzzy)) day = 15;
+        return `${y}-${String(mn).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+      }
+    }
+
+    // Bare "September 2026" (not preceded by a day number like "24 July 2026")
+    m = cleaned.match(new RegExp(`(?<!\\d{1,2}\\s)(${MW})\\s+(\\d{4})\\b`, 'i'));
+    if (m) {
+      const mn = MONTHS[m[1].toLowerCase()];
+      if (mn) return `${m[2]}-${String(mn).padStart(2,'0')}-01`;
+    }
+
+    m = cleaned.match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
     if (m) { let y=m[3]; if(y.length===2)y='20'+y; return `${y}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`; }
-    const MW=Object.keys(MONTHS).join('|');
     const r1=new RegExp(`(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MW})(?:[,\\s]+(\\d{4}))?`,'i');
     const r2=new RegExp(`(${MW})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:[,\\s]+(\\d{4}))?`,'i');
-    m=src.match(r1);
+    m=cleaned.match(r1);
     if (m) { const mn=MONTHS[m[2].toLowerCase()]; const y=m[3]||new Date().getFullYear(); if(mn) return `${y}-${String(mn).padStart(2,'0')}-${m[1].padStart(2,'0')}`; }
-    m=src.match(r2);
+    m=cleaned.match(r2);
     if (m) { const mn=MONTHS[m[1].toLowerCase()]; const y=m[3]||new Date().getFullYear(); if(mn) return `${y}-${String(mn).padStart(2,'0')}-${m[2].padStart(2,'0')}`; }
     return '';
   }
@@ -206,6 +251,7 @@ function parseEmail(raw) {
     const parts = fullName.trim().split(/\s+/);
     firstName = parts[0]||''; lastName = parts.slice(1).join(' ')||'';
     email = inlineVal(/Email\s*(?:address)?:\s*([\w.+-]+@[\w.-]+)/i);
+    if (isStaffEmail(email)) email = pickCustomerEmail(text);
     phone = inlineVal(/Contact\s*(?:number)?:\s*([+0-9][0-9 \-]{6,15})/i);
     const wd = inlineVal(/Wedding\s*Date:\s*([^\n\r,]+)/i);
     eventDate = parseDate(wd.trim());
@@ -224,6 +270,7 @@ function parseEmail(raw) {
     firstName = nextVal(/^Name$/i);
     lastName  = nextVal(/^(Last|Last Name|Surname)$/i);
     email     = nextVal(/^(Email|E-mail|Email Address)$/i);
+    if (isStaffEmail(email)) email = pickCustomerEmail(text);
     phone     = nextVal(/^(Phone|Tel|Mobile|Contact Number|Number|Cell)$/i);
     const dh=text.match(/Date:\s*\w+,?\s+(\d{1,2})\s+(\w+)\s+(\d{4})/i);
     if (dh) { const mn=MONTHS[dh[2].toLowerCase()]; if(mn) enquiryDate=`${dh[3]}-${String(mn).padStart(2,'0')}-${dh[1].padStart(2,'0')}`; }
@@ -319,9 +366,8 @@ function parseEmail(raw) {
 
     if (!firstName && nameM) { const p = nameM[1].trim().split(/\s+/); firstName = cap(p[0]); lastName = cap(p.slice(1).join(' ')); }
 
-    // Email — grab any email in the message (no domain filtering for WhatsApp)
-    const waEmailM = cleanText.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
-    if (waEmailM) email = waEmailM[0].trim();
+    // Email — skip staff / forwarder addresses (e.g. Marketing@lepommier.co.za)
+    email = pickCustomerEmail(cleanText);
 
     // Phone — SA number
     const phM = text.match(/(?:\+27|0)[0-9][\d\s\-]{7,12}/);
@@ -349,72 +395,139 @@ function parseEmail(raw) {
   } else {
     // Expanded sign-off patterns
     const signOffRe = /^(Kind Regards|Regards,?|Best Regards|Best wishes|Yours sincerely|Warm regards|Groete|Baie dankie)/i;
+    const staffNameRe = /^(Marketing|Events|Restaurant|Admin|Le Pommier|Digital\s*Niche)\b/i;
 
-    // Name: scan forward from sign-off for first capitalised name-like line
-    const signOffIdx = lines.findIndex(l => signOffRe.test(l));
-    if (signOffIdx >= 0) {
-      for (let i = signOffIdx + 1; i < Math.min(lines.length, signOffIdx + 6); i++) {
-        const l = lines[i];
-        if (l && /^[A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){0,2}$/.test(l) && !/^(Tel|www|http)/i.test(l)) {
-          const p = l.split(/\s+/); firstName = p[0]; lastName = p.slice(1).join(' '); break;
+    // Customer email first — drives name/message extraction in forwarded threads
+    email = pickCustomerEmail(text);
+
+    // Original enquiry in a reply thread: text after the last "On … wrote:" from the customer
+    let customerBlock = '';
+    const wroteMatches = [...text.matchAll(/On\s.+?wrote:\s*/gi)];
+    if (wroteMatches.length) {
+      const last = wroteMatches[wroteMatches.length - 1];
+      customerBlock = text.slice(last.index + last[0].length).trim();
+    }
+    // Or innermost From: block belonging to the customer
+    if (!customerBlock && email) {
+      const fromRe = /From:\s*([^<\n]*?)\s*<([^>\n]+)>/gi;
+      let fm, lastCust = null;
+      while ((fm = fromRe.exec(text))) {
+        if (fm[2].toLowerCase() === email.toLowerCase()) lastCust = fm;
+      }
+      if (lastCust) {
+        const after = text.slice(lastCust.index + lastCust[0].length);
+        // Skip remaining headers then take body
+        customerBlock = after.replace(/^[\s\S]*?(?=\n(?:Hi|Hello|Dear|Good|I\b|We\b|Looking|Ek\b))/i, '').trim();
+      }
+    }
+
+    const nameSource = customerBlock || text;
+    const nameLines = nameSource.split('\n').map(l => l.trim()).filter(Boolean);
+
+    // Name from customer From: header
+    if (email) {
+      const fromCust = [...text.matchAll(/From:\s*([^<\n]+?)\s*<([^>\n]+)>/gi)]
+        .reverse()
+        .find(m => m[2].toLowerCase() === email.toLowerCase());
+      if (fromCust) {
+        const nm = fromCust[1].replace(/"/g, '').trim();
+        if (nm && !staffNameRe.test(nm) && !isStaffEmail(nm)) {
+          const p = nm.split(/\s+/).filter(w => !/@/.test(w));
+          if (p.length) { firstName = p[0]; lastName = p.slice(1).join(' '); }
         }
       }
     }
-    // Fallback: backwards from Tel: line
+
+    // Name: scan forward from sign-off — prefer last (customer) sign-off, skip staff names
     if (!firstName) {
-      const telIdx = lines.findIndex(l => /^Tel[:\s]/i.test(l));
-      if (telIdx > 0) {
-        for (let i = telIdx-1; i >= Math.max(0, telIdx-5); i--) {
-          const l = lines[i];
-          if (l && /^[A-Z][a-zA-Z'-]+(?: [A-Z][a-zA-Z'-]+)?$/.test(l)) {
+      const signOffIdxs = nameLines.map((l, i) => signOffRe.test(l) ? i : -1).filter(i => i >= 0);
+      for (let s = signOffIdxs.length - 1; s >= 0 && !firstName; s--) {
+        const signOffIdx = signOffIdxs[s];
+        for (let i = signOffIdx + 1; i < Math.min(nameLines.length, signOffIdx + 6); i++) {
+          const l = nameLines[i];
+          if (!l || staffNameRe.test(l) || /^(Tel|www|http|Le Pommier)/i.test(l)) continue;
+          if (/^[A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){0,2}$/.test(l)) {
             const p = l.split(/\s+/); firstName = p[0]; lastName = p.slice(1).join(' '); break;
           }
         }
       }
     }
-    // Fallback: From: header innermost occurrence
+    // Fallback: backwards from Tel: / phone line
     if (!firstName) {
-      const froms = [...text.matchAll(/From:\s*([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)?)\s*[<\n]/g)];
-      if (froms.length) { const last = froms[froms.length-1]; const p = last[1].trim().split(/\s+/); firstName = p[0]; lastName = p.slice(1).join(' '); }
+      const telIdx = nameLines.findIndex(l => /^Tel[:\s]/i.test(l) || /^(?:\+27|0)\d/.test(l));
+      if (telIdx > 0) {
+        for (let i = telIdx - 1; i >= Math.max(0, telIdx - 5); i--) {
+          const l = nameLines[i];
+          if (l && !staffNameRe.test(l) && /^[A-Z][a-zA-Z'-]+(?: [A-Z][a-zA-Z'-]+)?$/.test(l)) {
+            const p = l.split(/\s+/); firstName = p[0]; lastName = p.slice(1).join(' '); break;
+          }
+        }
+      }
     }
-    // Email — exclude internal domains
-    const allEmails = [...text.matchAll(/[\w.+-]+@[\w-]+\.[\w.]+/g)].map(m => m[0]);
-    email = allEmails.find(e => !INTERNAL.some(d => e.includes(d))) || '';
-    // Phone
-    const telLine = lines.find(l => /^Tel[:\s]/i.test(l));
+    // Fallback: From: header innermost non-staff occurrence
+    if (!firstName) {
+      const froms = [...text.matchAll(/From:\s*(?:([^<\n]+?)\s*)?(?:<([^>\n]+)>|([\w.+-]+@[\w.-]+))?/gi)];
+      for (let i = froms.length - 1; i >= 0; i--) {
+        const addr = (froms[i][2] || froms[i][3] || '').trim();
+        const namePart = (froms[i][1] || '').replace(/"/g, '').trim();
+        if (addr && isStaffEmail(addr)) continue;
+        if (staffNameRe.test(namePart) || /^marketing\b/i.test(namePart)) continue;
+        const nm = namePart.match(/^([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)?)/);
+        if (nm) { const p = nm[1].trim().split(/\s+/); firstName = p[0]; lastName = p.slice(1).join(' '); break; }
+      }
+    }
+
+    // Phone — prefer customer block
+    const phoneSrc = customerBlock || text;
+    const telLine = phoneSrc.split('\n').map(l => l.trim()).find(l => /^Tel[:\s]/i.test(l));
     if (telLine) phone = telLine.replace(/^Tel[:\s]*/i, '').trim();
-    if (!phone) { const m = text.match(/(?:\+[\d\s\-]{8,15}|0[0-9][\d\s\-]{7,12})/); if (m) phone = m[0].trim(); }
+    if (!phone) { const m = phoneSrc.match(/(?:\+27|0)[0-9][\d\s\-]{7,12}/); if (m) phone = m[0].trim(); }
+
     // Enquiry date from innermost Date: header
     const allDates = [...text.matchAll(/Date:\s*\w+,?\s+(\d{1,2})\s+(\w+)\s+(\d{4})/gi)];
     if (allDates.length) { const last = allDates[allDates.length-1]; const mn = MONTHS[last[2].toLowerCase()]; if (mn) enquiryDate = `${last[3]}-${String(mn).padStart(2,'0')}-${last[1].padStart(2,'0')}`; }
-    // heardFrom; pax
+
     heardFrom = 'Website';
-    const epaxM = text.match(/(\d+)\s*(?:pax|people|persons?|guests?|delegates?|mense|gaste)/i);
+    const paxSrc = customerBlock || text;
+    const epaxM = paxSrc.match(/(\d+)\s*(?:pax|people|persons?|guests?|delegates?|mense|gaste)/i)
+      || text.match(/(\d+)\s*(?:pax|people|persons?|guests?|delegates?|mense|gaste)/i);
     if (epaxM) pax = epaxM[1];
-    // Function type: try known keywords from subject, then message body
+
+    // Function type: subject, then customer message
     const subjMatch = text.match(/Subject:\s*(?:FW:|RE:|FWD:)?\s*(.+)/i);
     if (subjMatch) {
       const subjText = subjMatch[1].trim();
       funcType = detectFuncType(subjText);
-      // No keyword — use subject but strip trailing date/year noise
       if (!funcType) funcType = subjText.replace(/\s*\d{1,2}\s+\w+\s+\d{4}\s*$/, '').replace(/\s*\d{4}\s*$/, '').trim();
     }
-    // Message body: greeting to sign-off
-    const lastSubjIdx = lines.map((l,i) => /^Subject:/i.test(l) ? i : -1).filter(i => i >= 0).pop() || 0;
-    const bodyLines = lines.slice(lastSubjIdx + 1).filter(l => l);
-    const msgStart = bodyLines.findIndex(l => /^(Dear|Hello|Hi |Good (day|morning|afternoon|evening))/i.test(l));
-    const bodyFrom = msgStart >= 0 ? bodyLines.slice(msgStart) : bodyLines;
-    const msgEnd = bodyFrom.findIndex(l => signOffRe.test(l) || /^(Thank you|Tel:|www\.)/i.test(l));
-    const bodySlice = msgEnd > 0 ? bodyFrom.slice(0, msgEnd) : bodyFrom;
-    message = bodySlice.join('\n').trim().slice(0, 800);
-    // If subject had no real function type (or was generic), scan the body
+
+    // Message: prefer original customer enquiry over staff auto-reply
+    if (customerBlock) {
+      const cLines = customerBlock.split('\n').map(l => l.trim()).filter(Boolean);
+      const msgStart = cLines.findIndex(l => /^(Dear|Hello|Hi\b|Good (day|morning|afternoon|evening)|I\b|We\b|Looking|Ek\b)/i.test(l));
+      const bodyFrom = msgStart >= 0 ? cLines.slice(msgStart) : cLines;
+      const msgEnd = bodyFrom.findIndex(l => signOffRe.test(l) || /^(Tel:|www\.|Sent from)/i.test(l));
+      const bodySlice = msgEnd > 0 ? bodyFrom.slice(0, msgEnd) : bodyFrom.filter(l => !/^(?:\+27|0)\d/.test(l) && !/@/.test(l));
+      message = bodySlice.join('\n').trim().slice(0, 800);
+    } else {
+      const lastSubjIdx = lines.map((l,i) => /^Subject:/i.test(l) ? i : -1).filter(i => i >= 0).pop() || 0;
+      const bodyLines = lines.slice(lastSubjIdx + 1).filter(l => l);
+      const msgStart = bodyLines.findIndex(l => /^(Dear|Hello|Hi |Good (day|morning|afternoon|evening))/i.test(l));
+      const bodyFrom = msgStart >= 0 ? bodyLines.slice(msgStart) : bodyLines;
+      const msgEnd = bodyFrom.findIndex(l => signOffRe.test(l) || /^(Thank you|Tel:|www\.)/i.test(l));
+      const bodySlice = msgEnd > 0 ? bodyFrom.slice(0, msgEnd) : bodyFrom;
+      message = bodySlice.join('\n').trim().slice(0, 800);
+    }
+
     if (!funcType || isGenericEnquiry(funcType) || /^Contact Us Form/i.test(funcType)) {
-      const fromMsg = detectFuncType(message);
+      const fromMsg = detectFuncType(message) || detectFuncType(customerBlock);
       if (fromMsg) funcType = fromMsg;
     }
-    // Event date
-    const searchText = (subjMatch ? subjMatch[1] : '') + '\n' + text;
+
+    // Event date — search customer message + subject (not staff reply / Date headers)
+    const searchText = [subjMatch ? subjMatch[1] : '', customerBlock || message, message].join('\n');
     eventDate = findEventDate(searchText);
+    if (!eventDate) eventDate = findEventDate(text);
   }
   return { firstName:cap(firstName.trim()), lastName:cap(lastName.trim()), email, phone, enquiryDate, eventDate, message, funcType, pax, heardFrom };
 }
